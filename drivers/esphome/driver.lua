@@ -3,19 +3,12 @@ DC_PID = 819
 DC_X = nil
 DC_FILENAME = "esphome.c4z"
 --#else
-DRIVER_GITHUB_REPO = "finitelabs/control4-esphome"
+-- This is the "ESPHome with Feedback" fork, installed alongside the stock ESPHome
+-- driver. It updates only itself, from the fork, so it never replaces the shared
+-- sub-drivers (light, fan, climate, ...) the stock driver manages.
+DRIVER_GITHUB_REPO = "krishy2/control4-esphome"
 DRIVER_FILENAMES = {
-  "esphome.c4z",
-  "esphome_bluetooth_coordinator.c4z",
-  "esphome_govee.c4z",
-  "esphome_bthome.c4z",
-  -- #variant-filenames esphome_fan
-  "esphome_climate.c4z",
-  "esphome_light.c4z",
-  "esphome_lock.c4z",
-  "esphome_serenescent.c4z",
-  "esphome_switchbot.c4z",
-  "esphome_yale.c4z",
+  "esphome_feedback.c4z",
 }
 --#endif
 
@@ -696,7 +689,7 @@ local RESET_PROPERTY_VALUES = {
   ["Driver Version"] = "",
   ["Log Level"] = "3 - Info",
   ["Log Mode"] = "Off",
-  ["Automatic Updates"] = "On",
+  ["Automatic Updates"] = "Off",
   ["Update Channel"] = "Production",
   ["Device Log Forwarding"] = "Off",
   ["Use OpenSSL"] = "Yes",
