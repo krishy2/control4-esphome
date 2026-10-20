@@ -1,6 +1,13 @@
 --#ifndef DRIVERCENTRAL
-DRIVER_GITHUB_REPO = "finitelabs/control4-esphome"
+-- This is the "ESPHome with Feedback" fork, installed alongside the stock ESPHome
+-- driver. It updates only itself, from the fork, and shares its update settings
+-- with no other driver, so it never touches the stock driver or the shared
+-- sub-drivers (light, fan, climate, ...) the stock driver manages.
+DRIVER_GITHUB_REPO = "krishy2/control4-esphome"
 --#endif
+
+--- The fork's only driver: what it updates and shares its update settings with.
+local FEEDBACK_FILENAMES = { "esphome_feedback.c4z" }
 
 require("lib.utils")
 require("drivers-common-public.global.handlers")
@@ -11,7 +18,6 @@ local log = require("lib.logging")
 local bindings = require("lib.bindings")
 local events = require("lib.events")
 --#ifndef DRIVERCENTRAL
-local driverFilenames = require("lib.driver-filenames")
 local githubUpdater = require("lib.github-updater")
 --#endif
 local updateSettings = require("lib.update-settings")
@@ -169,7 +175,7 @@ OnDriverLateInit = diagnostics:wrapLateInit(OnDriverLateInit)
 function OPC.Automatic_Updates(propertyValue)
   log:trace("OPC.Automatic_Updates('%s')", propertyValue)
   if gInitialized then
-    updateSettings:share("Automatic Updates", propertyValue)
+    updateSettings:share("Automatic Updates", propertyValue, FEEDBACK_FILENAMES)
   end
 end
 
@@ -177,7 +183,7 @@ end
 function OPC.Update_Channel(propertyValue)
   log:trace("OPC.Update_Channel('%s')", propertyValue)
   if gInitialized then
-    updateSettings:share("Update Channel", propertyValue)
+    updateSettings:share("Update Channel", propertyValue, FEEDBACK_FILENAMES)
   end
 end
 --#endif
@@ -894,7 +900,7 @@ end
 function UpdateDrivers(forceUpdate)
   log:trace("UpdateDrivers(%s)", forceUpdate)
   githubUpdater
-    :updateAll(DRIVER_GITHUB_REPO, driverFilenames, Properties["Update Channel"] == "Prerelease", forceUpdate)
+    :updateAll(DRIVER_GITHUB_REPO, FEEDBACK_FILENAMES, Properties["Update Channel"] == "Prerelease", forceUpdate)
     :next(function(updatedDrivers)
       if not IsEmpty(updatedDrivers) then
         log:info("Updated driver(s): %s", table.concat(updatedDrivers, ","))
