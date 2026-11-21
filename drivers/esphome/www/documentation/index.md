@@ -1361,10 +1361,11 @@ declares them, with any of these variables:
 | `control4_media`   | `room_on` bool, `source` string, `title`, `artist`, `album`, `image_url` strings, `volume` int, `muted` bool, `playing` bool |
 | `control4_sources` | `sources` string (names, one per line), `selected` int (index, -1 for none)                                                  |
 
-`playing` is what the panel last asked for: a room does not report whether it is
-playing. `title`, `artist`, `album` and `image_url` come from the room's current
-media info when its source provides them. The driver logs the raw media info and
-the room's source lists at the Info level.
+`playing` comes from the Digital Media agent's queue status for the room, or the
+media info's own state; for a source that reports neither, it is what the panel
+last asked for. `title`, `artist`, `album` and `image_url` come from the room's
+current media info when its source provides them. The driver logs the raw media
+info and the room's source lists at the Info level.
 
 <!-- #ifdef DRIVERCENTRAL -->
 
