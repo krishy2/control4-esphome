@@ -121,8 +121,9 @@ def check_encrypted(build: str, folder: str = "") -> int:
     return 0
 
 
+# vYYYYMMDDNN (date + two-digit build number), or upstream's vYYYYMMDD.
 TAG_VERSION = re.compile(
-    r"v([0-9]{4}(?:0[1-9]|1[0-2])(?:0[1-9]|[12][0-9]|3[01]))(?:-.+)?"
+    r"v([0-9]{4}(?:0[1-9]|1[0-2])(?:0[1-9]|[12][0-9]|3[01])(?:[0-9]{2})?)(?:-.+)?"
 )
 
 
@@ -130,7 +131,7 @@ def tag_version(tag: str) -> int:
     match = TAG_VERSION.fullmatch(tag)
     if not match:
         print(
-            f"Error: tag {tag} is not vYYYYMMDD or vYYYYMMDD-suffix, so it cannot give the driver version",
+            f"Error: tag {tag} is not vYYYYMMDDNN, vYYYYMMDD or either with a -suffix, so it cannot give the driver version",
             file=sys.stderr,
         )
         return 1

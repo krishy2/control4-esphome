@@ -183,9 +183,12 @@ gen-squishy: ## Auto-generate squishy files from .c4zproj
 .PHONY: update-xml update-xml-version update-xml-modified
 update-xml: update-xml-version update-xml-modified ## Stamp version + modified in driver.xml
 
-# build.yml passes the tag's date on a tag build: the updater compares this with
-# the release tag, and the runner's own date is UTC.
-DRIVER_VERSION ?= $(shell date +'%Y%m%d')
+# build.yml passes the tag's version on a tag build: the updater compares this
+# with the release tag, and the runner's own date is UTC.
+# Versions are YYYYMMDDNN: the date and a two-digit build number for that day
+# (make build BUILD_NUMBER=02 for the second build of a day).
+BUILD_NUMBER ?= 01
+DRIVER_VERSION ?= $(shell date +'%Y%m%d')$(BUILD_NUMBER)
 
 update-xml-version: $(VENV_STAMP)
 	@for build in $(DISTRIBUTIONS); do \

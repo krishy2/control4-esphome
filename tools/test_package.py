@@ -136,11 +136,22 @@ class TagVersionTest(InTempDir):
             (0, "DRIVER_VERSION=20260918\n"),
         )
 
+    def test_a_build_numbered_tag_gives_its_version(self):
+        self.assertEqual(
+            self._run(tag_version, "v2026112102")[:2],
+            (0, "DRIVER_VERSION=2026112102\n"),
+        )
+        self.assertEqual(
+            self._run(tag_version, "v2026112101-rc1")[:2],
+            (0, "DRIVER_VERSION=2026112101\n"),
+        )
+
     def test_a_tag_that_is_not_a_date_fails(self):
         for tag in (
             "20261101",
             "v2026110",
             "v202611011",
+            "v20261101123",
             "v20261301",
             "v20261100",
             "v20261132",
