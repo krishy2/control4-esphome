@@ -22,6 +22,11 @@ Template for a new release entry (copy below the heading, fill in, uncomment):
 
 ### Added
 
+- Added room media to the ESPHome driver: a panel controls its Control4 room's
+  media (volume, mute, transport, sources, room off) through
+  `homeassistant.action` calls, and is shown the room's power, source, volume
+  and what is playing through its `control4_media` and `control4_sources`
+  actions
 - Added Control4 load groups to the ESPHome light: it joins a load group and
   follows the group's level, ramps and sync.
 - Added button LED feedback through API actions to the ESPHome driver: each
