@@ -15,13 +15,20 @@ local deferred = require("deferred")
 local RoomMedia = require("esphome.room_media")
 
 local ROOM, OTHER_ROOM = 21, 22
+local DIGITAL_AUDIO = 900
 local SPOTIFY, APPLE_TV = 301, 302
 
 -- The controller: room variables, device names, room commands sent, UI requests answered.
 local variables = {
   [ROOM] = { [1000] = "0", [1010] = "0", [1011] = "35", [1018] = "0", [1031] = "" },
   [OTHER_ROOM] = { [1000] = "0", [1010] = "0", [1011] = "10", [1018] = "0", [1031] = "" },
+  [DIGITAL_AUDIO] = { [1004] = "", [1006] = "" },
 }
+function C4:GetDevicesByC4iName(name)
+  if name == "digital_audio.c4i" then
+    return { [DIGITAL_AUDIO] = "Digital Media" }
+  end
+end
 local names = { [ROOM] = "Entrance", [OTHER_ROOM] = "Kitchen", [SPOTIFY] = "Spotify", [APPLE_TV] = "Apple TV" }
 local roomCommands, uiRequests, listeners = {}, {}, {}
 function C4:RoomGetId()
@@ -193,6 +200,41 @@ T.eq("unknown commands, missing sources and other actions send nothing", #roomCo
 
 actionCallback("control4.media", { command = "room_off" })
 T.eq("room off", lastCommand().command, "ROOM_OFF")
+
+--------------------------------------------------------------------------------
+T.section("The play state Control4 reports wins over the toggle")
+--------------------------------------------------------------------------------
+
+T.truthy("watches the queue status", listeners[DIGITAL_AUDIO .. ":1006"])
+changed(ROOM, 1010, "1")
+changed(
+  DIGITAL_AUDIO,
+  1006,
+  "<queues><queue><state>PLAY</state><rooms><id>"
+    .. ROOM
+    .. "</id></rooms></queue><queue><state>STOP</state><rooms><id>99</id></rooms></queue></queues>"
+)
+T.eq("playing, from the room's queue", lastCall("control4_media").playing, true)
+actionCallback("control4.media", { command = "play_pause" })
+T.eq("so play_pause pauses", lastCommand().command, "PAUSE")
+actionCallback("control4.media", { command = "play_pause" })
+T.eq("and keeps pausing until Control4 says otherwise", lastCommand().command, "PAUSE")
+changed(DIGITAL_AUDIO, 1006, '<queues><queue state="PAUSE"><rooms><id>' .. ROOM .. "</id></rooms></queue></queues>")
+T.eq("paused, from an attribute", lastCall("control4_media").playing, false)
+actionCallback("control4.media", { command = "play_pause" })
+T.eq("so play_pause plays", lastCommand().command, "PLAY")
+
+T.eq(
+  "a queue without the room says nothing",
+  RoomMedia.parseQueueState("<queue><state>PLAY</state><room>7</room></queue>", ROOM),
+  nil
+)
+T.eq(
+  "media info's own state counts too",
+  RoomMedia.parseQueueState("<q><status>Playing</status><roomid>21</roomid></q>", 21),
+  true
+)
+changed(DIGITAL_AUDIO, 1006, "")
 
 --------------------------------------------------------------------------------
 T.section("Media Room and Media Sources")

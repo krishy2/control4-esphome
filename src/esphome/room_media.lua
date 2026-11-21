@@ -20,7 +20,10 @@ local log = require("lib.logging")
 --- @field client ESPHomeClient
 --- @field room integer|nil The room being watched.
 --- @field sources RoomMediaSource[]
---- @field playing boolean What play_pause last asked for, as the room does not say.
+--- @field playing boolean Whether the room is playing: as Control4 reports it when it does, else what play_pause last asked for.
+--- @field playKnown boolean Whether `playing` came from Control4.
+--- @field digitalAudio integer|false|nil The Digital Media agent being watched (false: none found).
+--- @field lastQueue string|nil The last raw queue status logged.
 --- @field sent table<string, string> What each device action was last sent this connection.
 --- @field lastInfo string|nil The last raw media info logged.
 local RoomMedia = {}
@@ -39,6 +42,11 @@ RoomMedia.VAR = {
   IS_MUTED = 1018,
   MEDIA_INFO = 1031,
 }
+
+--- The Digital Media agent's queue status variables, newest format first: they say whether each room's digital
+--- media queue is playing.
+RoomMedia.QUEUE_VARS = { 1006, 1004 }
+RoomMedia.DIGITAL_AUDIO_C4I = "digital_audio.c4i"
 
 --- Commands that are one room command with no value.
 local ROOM_COMMANDS = {
@@ -63,6 +71,9 @@ function RoomMedia:new(client)
   instance.room = nil
   instance.sources = {}
   instance.playing = false
+  instance.playKnown = false
+  instance.digitalAudio = nil
+  instance.lastQueue = nil
   instance.sent = {}
   instance.lastInfo = nil
   return instance
@@ -159,6 +170,150 @@ function RoomMedia.parseMediaInfo(raw)
     absoluteUrl(findValue(parsed, IMAGE_KEYS))
 end
 
+local STATE_KEYS = { state = true, playstate = true, play_state = true, status = true, mediastate = true }
+
+--- Whether a state string means playing (true), paused or stopped (false), or nothing known (nil).
+--- @param value any
+--- @return boolean|nil
+local function playingFrom(value)
+  if value == nil then
+    return nil
+  end
+  local upper = tostring(value):upper()
+  if upper:find("PLAY") then
+    return true
+  elseif upper:find("PAUS") or upper:find("STOP") or upper:find("IDLE") or upper == "END" then
+    return false
+  end
+  return nil
+end
+
+--- Read a room's play state from the Digital Media agent's queue status XML: the state of the queue the room
+--- belongs to. The format is not documented, so any element naming the room (in a key with "room" in its name, or
+--- an attribute) is taken with the nearest state above or beside it.
+--- @param raw string
+--- @param room integer
+--- @return boolean|nil
+function RoomMedia.parseQueueState(raw, room)
+  if IsEmpty(raw) or room == nil then
+    return nil
+  end
+  local ok, parsed = pcall(ParseXml, raw)
+  if not ok or type(parsed) ~= "table" then
+    return nil
+  end
+  local wanted = tostring(room)
+  local function stateOf(node)
+    for k, v in pairs(node) do
+      if type(k) == "string" and STATE_KEYS[k:lower()] and (type(v) == "string" or type(v) == "number") then
+        return playingFrom(v)
+      end
+    end
+    if type(node._attr) == "table" then
+      for k, v in pairs(node._attr) do
+        if STATE_KEYS[tostring(k):lower()] then
+          return playingFrom(v)
+        end
+      end
+    end
+    return nil
+  end
+  local function namesRoom(node)
+    for k, v in pairs(node) do
+      if type(k) == "string" and k:lower():find("room") then
+        if tostring(v) == wanted then
+          return true
+        end
+        if type(v) == "table" then
+          for _, item in pairs(v) do
+            if
+              tostring(item) == wanted
+              or (type(item) == "table" and (tostring(item[1]) == wanted or tostring(item.id) == wanted))
+            then
+              return true
+            end
+          end
+          if tostring(v[1]) == wanted or tostring(v.id) == wanted then
+            return true
+          end
+        end
+      end
+    end
+    if type(node._attr) == "table" then
+      for k, v in pairs(node._attr) do
+        if tostring(k):lower():find("room") and tostring(v) == wanted then
+          return true
+        end
+      end
+    end
+    return false
+  end
+  local function walk(node, inherited, depth)
+    if type(node) ~= "table" or depth > 10 then
+      return nil
+    end
+    local state = stateOf(node)
+    if state == nil then
+      state = inherited
+    end
+    if namesRoom(node) and state ~= nil then
+      return state
+    end
+    for k, child in pairs(node) do
+      if k ~= "_attr" and type(child) == "table" then
+        local found = walk(child, state, depth + 1)
+        if found ~= nil then
+          return found
+        end
+      end
+    end
+    return nil
+  end
+  return walk(parsed, nil, 0)
+end
+
+--- The Digital Media agent, once found (false when there is none).
+--- @return integer|nil
+function RoomMedia:digitalAudioId()
+  if self.digitalAudio == nil then
+    local id = next(C4:GetDevicesByC4iName(self.DIGITAL_AUDIO_C4I) or {})
+    id = tointeger(id) or GetAgentId(self.DIGITAL_AUDIO_C4I)
+    self.digitalAudio = id or false
+    log:info("Room media: Digital Media agent %s", id or "not found")
+  end
+  return self.digitalAudio or nil
+end
+
+--- Whether the room is playing, from the Digital Media agent's queue status, else the media info's own state,
+--- else nil (not reported).
+--- @param mediaInfo string
+--- @return boolean|nil
+function RoomMedia:reportedPlaying(mediaInfo)
+  local agent = self:digitalAudioId()
+  if agent ~= nil then
+    for _, id in ipairs(self.QUEUE_VARS) do
+      local raw = variable(agent, id)
+      if not IsEmpty(raw) then
+        if raw ~= self.lastQueue then
+          self.lastQueue = raw
+          log:info("Room media: queue status (%s): %s", id, raw)
+        end
+        local state = self.parseQueueState(raw, self.room)
+        if state ~= nil then
+          return state
+        end
+      end
+    end
+  end
+  if not IsEmpty(mediaInfo) then
+    local ok, parsed = pcall(ParseXml, mediaInfo)
+    if ok and type(parsed) == "table" then
+      return playingFrom(findValue(parsed, STATE_KEYS))
+    end
+  end
+  return nil
+end
+
 --- The device connected: take its commands, watch its room and show it the room's state.
 function RoomMedia:connected()
   self.sent = {}
@@ -216,6 +371,14 @@ function RoomMedia:watch()
     RegisterVariableListener(room, id, function()
       self:push()
     end)
+  end
+  local agent = self:digitalAudioId()
+  if agent ~= nil then
+    for _, id in ipairs(self.QUEUE_VARS) do
+      RegisterVariableListener(agent, id, function()
+        self:push()
+      end)
+    end
   end
 end
 
@@ -309,6 +472,11 @@ function RoomMedia:push()
     log:info("Room media: media info for room %s: %s", room, raw)
   end
   local title, artist, album, image = self.parseMediaInfo(raw)
+  local reported = self:reportedPlaying(raw)
+  self.playKnown = reported ~= nil
+  if reported ~= nil then
+    self.playing = reported
+  end
   if not on then
     title, artist, album, image = "", "", "", ""
     self.playing = false
@@ -380,9 +548,11 @@ function RoomMedia:command(command, data)
       self.playing = false
     end
   elseif command == "play_pause" then
-    -- The room says nothing about whether it is playing, so this alternates, starting with play.
-    self.playing = not self.playing
-    self:roomCommand(self.playing and "PLAY" or "PAUSE")
+    -- Pause when the room is playing, else play: as Control4 reports it, or, when it does not, alternating.
+    self:roomCommand(self.playing and "PAUSE" or "PLAY")
+    if not self.playKnown then
+      self.playing = not self.playing
+    end
   elseif command == "set_volume" then
     local level = tonumber(data.level)
     if level == nil then
