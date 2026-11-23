@@ -46,7 +46,13 @@ RoomMedia.VAR = {
 --- The Digital Media agent's queue status variables, newest format first: they say whether each room's digital
 --- media queue is playing.
 RoomMedia.QUEUE_VARS = { 1006, 1004 }
-RoomMedia.DIGITAL_AUDIO_C4I = "digital_audio.c4i"
+--- Names the Digital Media agent's driver file goes by; the first one found is used.
+RoomMedia.DIGITAL_AUDIO_C4I = {
+  "digital_audio.c4i",
+  "control4_digitalaudio.c4i",
+  "control4_digital_audio.c4i",
+  "digitalaudio.c4i",
+}
 
 --- Commands that are one room command with no value.
 local ROOM_COMMANDS = {
@@ -130,8 +136,15 @@ end
 local TITLE_KEYS = { title = true, songname = true, song = true, name = true }
 local ARTIST_KEYS = { artist = true, subtitle = true, artistname = true }
 local ALBUM_KEYS = { album = true, albumname = true }
-local IMAGE_KEYS =
-  { img = true, image = true, imageurl = true, image_url = true, art = true, coverart = true, cover_art = true }
+local IMAGE_KEYS = {
+  img = true,
+  image = true,
+  imageurl = true,
+  image_url = true,
+  art = true,
+  coverart = true,
+  cover_art = true,
+}
 
 --- An image URL the device can fetch: one on the controller ("/...") gets the controller's address.
 --- @param url string|nil
@@ -164,10 +177,19 @@ function RoomMedia.parseMediaInfo(raw)
   if not ok or type(parsed) ~= "table" then
     return "", "", "", ""
   end
-  return findValue(parsed, TITLE_KEYS) or "",
-    findValue(parsed, ARTIST_KEYS) or "",
-    findValue(parsed, ALBUM_KEYS) or "",
-    absoluteUrl(findValue(parsed, IMAGE_KEYS))
+  local image = findValue(parsed, IMAGE_KEYS)
+  if not IsEmpty(image) and not tostring(image):match("^%a+://") and tostring(image):sub(1, 1) ~= "/" then
+    -- Media service drivers send IMAGEURL Base64 encoded.
+    local ok, decoded = pcall(C4.Base64Decode, C4, tostring(image))
+    if ok and type(decoded) == "string" and (decoded:match("^%a+://") or decoded:sub(1, 1) == "/") then
+      image = decoded
+    end
+  end
+  -- Media service drivers describe what is playing as LINE1 (title) to LINE4.
+  return findValue(parsed, TITLE_KEYS) or findValue(parsed, { line1 = true }) or "",
+    findValue(parsed, ARTIST_KEYS) or findValue(parsed, { line2 = true }) or "",
+    findValue(parsed, ALBUM_KEYS) or findValue(parsed, { line3 = true }) or "",
+    absoluteUrl(image)
 end
 
 local STATE_KEYS = { state = true, playstate = true, play_state = true, status = true, mediastate = true }
@@ -276,10 +298,17 @@ end
 --- @return integer|nil
 function RoomMedia:digitalAudioId()
   if self.digitalAudio == nil then
-    local id = next(C4:GetDevicesByC4iName(self.DIGITAL_AUDIO_C4I) or {})
-    id = tointeger(id) or GetAgentId(self.DIGITAL_AUDIO_C4I)
+    local id, found
+    for _, c4i in ipairs(self.DIGITAL_AUDIO_C4I) do
+      id = tointeger(next(C4:GetDevicesByC4iName(c4i) or {})) or tointeger(GetAgentId(c4i))
+      if id ~= nil and id > 0 then
+        found = c4i
+        break
+      end
+      id = nil
+    end
     self.digitalAudio = id or false
-    log:info("Room media: Digital Media agent %s", id or "not found")
+    log:info("Room media: Digital Media agent %s", id and (id .. " (" .. found .. ")") or "not found")
   end
   return self.digitalAudio or nil
 end
@@ -350,6 +379,13 @@ function RoomMedia:wanted()
   return self.client:hasService(self.INFO_ACTION) or self.client:hasService(self.SOURCES_ACTION)
 end
 
+--- Every room variable, by number (drivers-common-public's names), watched for the debug log: which of them
+--- change on play and pause is not documented.
+local ROOM_VAR_NAMES = {}
+for name, id in pairs(ROOM_VARS or {}) do
+  ROOM_VAR_NAMES[id] = name:gsub("%s+$", "")
+end
+
 --- Watch the room's variables, moving the listeners when the room changed.
 function RoomMedia:watch()
   local room = self:roomId()
@@ -357,6 +393,9 @@ function RoomMedia:watch()
     return
   end
   if self.room ~= nil then
+    for id in pairs(ROOM_VAR_NAMES) do
+      UnregisterVariableListener(self.room, id)
+    end
     for _, id in pairs(self.VAR) do
       UnregisterVariableListener(self.room, id)
     end
@@ -367,15 +406,30 @@ function RoomMedia:watch()
     return
   end
   log:info("Room media: watching room %s (%s)", room, C4:GetDeviceDisplayName(room))
+  local watched = {}
+  for id, name in pairs(ROOM_VAR_NAMES) do
+    watched[id] = name
+  end
   for _, id in pairs(self.VAR) do
-    RegisterVariableListener(room, id, function()
+    watched[id] = watched[id] or tostring(id)
+  end
+  for id, name in pairs(watched) do
+    RegisterVariableListener(room, id, function(_, _, value)
+      log:debug("Room media: room %s variable %s (%s) = %s", room, name, id, value)
       self:push()
     end)
   end
   local agent = self:digitalAudioId()
   if agent ~= nil then
+    for name, id in pairs(DIGITAL_AUDIO_VARS or {}) do
+      RegisterVariableListener(agent, id, function(_, _, value)
+        log:debug("Room media: Digital Media variable %s (%s) = %s", name, id, value)
+        self:push()
+      end)
+    end
     for _, id in ipairs(self.QUEUE_VARS) do
-      RegisterVariableListener(agent, id, function()
+      RegisterVariableListener(agent, id, function(_, _, value)
+        log:debug("Room media: Digital Media variable %s = %s", id, value)
         self:push()
       end)
     end

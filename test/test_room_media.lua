@@ -157,6 +157,20 @@ changed(ROOM, 1011, "62")
 T.eq("volume", lastCall("control4_media").volume, 62)
 
 --------------------------------------------------------------------------------
+T.section("Media service style media info: LINE1..LINE3 and a Base64 IMAGEURL")
+--------------------------------------------------------------------------------
+
+local title, artist, album, image = RoomMedia.parseMediaInfo(
+  "<info><LINE1>Holnap hajnalban</LINE1><LINE2>Kispál és a Borz</LINE2><LINE3>Ágy, asztal, tv</LINE3><IMAGEURL>"
+    .. C4:Base64Encode("http://192.168.1.20/art/1.jpg")
+    .. "</IMAGEURL></info>"
+)
+T.eq("LINE1 is the title", title, "Holnap hajnalban")
+T.eq("LINE2 the artist", artist, "Kispál és a Borz")
+T.eq("LINE3 the album", album, "Ágy, asztal, tv")
+T.eq("the image URL decoded", image, "http://192.168.1.20/art/1.jpg")
+
+--------------------------------------------------------------------------------
 T.section("Commands become room commands")
 --------------------------------------------------------------------------------
 
