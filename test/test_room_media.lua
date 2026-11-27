@@ -187,10 +187,10 @@ actionCallback("control4.media", { command = "previous" })
 T.eq("previous", lastCommand().command, "SKIP_REV")
 
 actionCallback("control4.media", { command = "play_pause" })
-T.eq("play_pause starts with play", lastCommand().command, "PLAY")
-T.eq("and says it is playing", lastCall("control4_media").playing, true)
+T.eq("a room that turned on is taken as playing: play_pause pauses", lastCommand().command, "PAUSE")
+T.eq("and says it is not playing", lastCall("control4_media").playing, false)
 actionCallback("control4.media", { command = "play_pause" })
-T.eq("then pauses", lastCommand().command, "PAUSE")
+T.eq("then plays", lastCommand().command, "PLAY")
 
 actionCallback("control4.media", { command = "set_volume", level = "120" })
 T.eq("set volume", lastCommand().command, "SET_VOLUME_LEVEL")
@@ -249,6 +249,45 @@ T.eq(
   true
 )
 changed(DIGITAL_AUDIO, 1006, "")
+
+--------------------------------------------------------------------------------
+T.section("A source driver's own play state variable counts")
+--------------------------------------------------------------------------------
+
+local SONOS = 272
+names[SONOS] = "Sonos"
+local sonosVars =
+  { ["1001"] = { name = "PLAY_STATE", value = "PLAYING" }, ["1002"] = { name = "VOLUME", value = "20" } }
+local shimDeviceVariables = C4.GetDeviceVariables
+function C4:GetDeviceVariables(id)
+  if tonumber(id) == SONOS then
+    return sonosVars
+  end
+  return shimDeviceVariables(self, id)
+end
+changed(ROOM, 1000, tostring(SONOS))
+T.truthy("watches the source's variables", listeners[SONOS .. ":1001"])
+T.eq("playing, from the source", lastCall("control4_media").playing, true)
+actionCallback("control4.media", { command = "play_pause" })
+T.eq("so play_pause pauses", lastCommand().command, "PAUSE")
+sonosVars["1001"].value = "PAUSED_PLAYBACK"
+OnWatchedVariableChanged(SONOS, 1001, "PAUSED_PLAYBACK")
+T.eq("paused, from the source", lastCall("control4_media").playing, false)
+changed(ROOM, 1000, tostring(SPOTIFY))
+T.falsy("stops watching the old source", listeners[SONOS .. ":1001"])
+
+--------------------------------------------------------------------------------
+T.section("With nothing reporting it, a room that turns on is playing")
+--------------------------------------------------------------------------------
+
+changed(ROOM, 1010, "0")
+changed(ROOM, 1000, "0")
+T.eq("off is not playing", lastCall("control4_media").playing, false)
+changed(ROOM, 1000, tostring(SPOTIFY))
+changed(ROOM, 1010, "1")
+T.eq("turned on: playing", lastCall("control4_media").playing, true)
+actionCallback("control4.media", { command = "play_pause" })
+T.eq("so the first tap pauses", lastCommand().command, "PAUSE")
 
 --------------------------------------------------------------------------------
 T.section("Media Room and Media Sources")
