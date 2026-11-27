@@ -292,6 +292,49 @@ T.eq("with no color", last().args.color, -1)
 T.contains("and the load is asked for its state", table.concat(sent, ","), long .. ":REQUEST_BUTTON_COLORS")
 
 --------------------------------------------------------------------------------
+T.section("A load that answers with colors only: its state from its variables")
+--------------------------------------------------------------------------------
+
+-- Control4's custom button (uibutton.c4i): answers REQUEST_BUTTON_COLORS with BUTTON_COLORS alone, and keeps its
+-- state on its UI button proxy.
+OBC[long](long, "BUTTON_LINK", false)
+local CUSTOM, CUSTOM_PROXY = 504, 505
+names[CUSTOM] = "All AC"
+peerBindings[CUSTOM] = {
+  {
+    bindingid = 5001,
+    name = "UIBUTTON",
+    provider = true,
+    boundconsumers = { { deviceid = CUSTOM_PROXY, bindingid = 5001 } },
+  },
+  { bindingid = 500, name = "Toggle", provider = true },
+}
+local customVars = {
+  [CUSTOM] = { ["1"] = { name = "COLOR", value = "00c800" } },
+  [CUSTOM_PROXY] = { ["1"] = { name = "BUTTON_STATE", value = "1" }, ["2"] = { name = "TEXT", value = "All AC" } },
+}
+local shimVariables = C4.GetDeviceVariables
+function C4:GetDeviceVariables(id)
+  return customVars[tonumber(id)] or shimVariables(self, id)
+end
+C4:Bind(CUSTOM, 500, C4:GetDeviceID(), long, "BUTTON_LINK")
+OBC[long](long, "BUTTON_LINK", true)
+RFP[long](long, "BUTTON_COLORS", { ON_COLOR = "00c800", OFF_COLOR = "0000ff" })
+before = #calls
+ShimFireTimers()
+T.eq("after the wait, the state comes from the proxy's variable", last().args.state, true)
+T.eq("with the on color", last().args.color, 0x00C800)
+T.eq("and its name", last().args.load_name, "All AC")
+
+customVars[CUSTOM_PROXY]["1"].value = "0"
+RFP[long](long, "MATCH_LED_STATE", { STATE = "1" })
+leds:discovered(entities)
+ShimFireTimers()
+T.eq("a state the load reports wins over its variables", last().args.state, true)
+C4:Unbind(C4:GetDeviceID(), long)
+OBC[long](long, "BUTTON_LINK", false)
+
+--------------------------------------------------------------------------------
 T.section("An unbound link goes dark on the device")
 --------------------------------------------------------------------------------
 
