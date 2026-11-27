@@ -24,6 +24,8 @@ local log = require("lib.logging")
 --- @field playKnown boolean Whether `playing` came from Control4.
 --- @field digitalAudio integer|false|nil The Digital Media agent being watched (false: none found).
 --- @field lastQueue string|nil The last raw queue status logged.
+--- @field source integer|nil The selected source device whose variables are watched.
+--- @field wasOn boolean Whether the room was on at the last push.
 --- @field sent table<string, string> What each device action was last sent this connection.
 --- @field lastInfo string|nil The last raw media info logged.
 local RoomMedia = {}
@@ -80,6 +82,8 @@ function RoomMedia:new(client)
   instance.playKnown = false
   instance.digitalAudio = nil
   instance.lastQueue = nil
+  instance.source = nil
+  instance.wasOn = false
   instance.sent = {}
   instance.lastInfo = nil
   return instance
@@ -202,10 +206,11 @@ local function playingFrom(value)
     return nil
   end
   local upper = tostring(value):upper()
-  if upper:find("PLAY") then
-    return true
-  elseif upper:find("PAUS") or upper:find("STOP") or upper:find("IDLE") or upper == "END" then
+  -- Not-playing words first: Sonos' paused state is PAUSED_PLAYBACK.
+  if upper:find("PAUS") or upper:find("STOP") or upper:find("IDLE") or upper:find("NOT") or upper == "END" then
     return false
+  elseif upper:find("PLAY") then
+    return true
   end
   return nil
 end
@@ -313,11 +318,82 @@ function RoomMedia:digitalAudioId()
   return self.digitalAudio or nil
 end
 
+--- Names of source driver variables that may hold its play state.
+local SOURCE_STATE_PATTERNS = { "PLAY", "TRANSPORT", "STATE", "STATUS" }
+
+--- Whether a source device's variables say it is playing: the first variable whose name suggests a play state
+--- and whose value reads as playing, paused or stopped.
+--- @param device integer
+--- @return boolean|nil state, string|nil name
+local function sourcePlaying(device)
+  local ok, variables = pcall(C4.GetDeviceVariables, C4, device)
+  if not ok or type(variables) ~= "table" then
+    return nil
+  end
+  for _, var in pairs(variables) do
+    local name = tostring(Select(var, "name") or ""):upper()
+    for _, pattern in ipairs(SOURCE_STATE_PATTERNS) do
+      if name:find(pattern) then
+        local state = playingFrom(Select(var, "value"))
+        if state ~= nil then
+          return state, name
+        end
+        break
+      end
+    end
+  end
+  return nil
+end
+
+--- Watch the selected source device's variables: a source driver may keep its play state in one of them. All are
+--- logged once at Info, and their changes at Debug.
+--- @param device integer
+function RoomMedia:watchSource(device)
+  if device == self.source then
+    return
+  end
+  if self.source ~= nil then
+    local ok, old = pcall(C4.GetDeviceVariables, C4, self.source)
+    for id in pairs(ok and type(old) == "table" and old or {}) do
+      UnregisterVariableListener(self.source, tointeger(id))
+    end
+  end
+  self.source = device > 0 and device or nil
+  if self.source == nil then
+    return
+  end
+  local ok, variables = pcall(C4.GetDeviceVariables, C4, self.source)
+  if not ok or type(variables) ~= "table" then
+    log:info("Room media: source %s has no variables to read", self.source)
+    return
+  end
+  local summary = {}
+  for id, var in pairs(variables) do
+    local name = tostring(Select(var, "name") or id)
+    summary[name] = Select(var, "value")
+    local varId = tointeger(id)
+    if varId ~= nil then
+      local source = self.source
+      RegisterVariableListener(source, varId, function(_, _, value)
+        log:debug("Room media: source %s variable %s (%s) = %s", source, name, varId, value)
+        self:push()
+      end)
+    end
+  end
+  log:info("Room media: source %s (%s) variables: %s", self.source, C4:GetDeviceDisplayName(self.source), summary)
+end
+
 --- Whether the room is playing, from the Digital Media agent's queue status, else the media info's own state,
---- else nil (not reported).
+--- else the selected source's own variables, else nil (not reported).
 --- @param mediaInfo string
 --- @return boolean|nil
 function RoomMedia:reportedPlaying(mediaInfo)
+  if self.source ~= nil then
+    local state = sourcePlaying(self.source)
+    if state ~= nil then
+      return state
+    end
+  end
   local agent = self:digitalAudioId()
   if agent ~= nil then
     for _, id in ipairs(self.QUEUE_VARS) do
@@ -526,11 +602,16 @@ function RoomMedia:push()
     log:info("Room media: media info for room %s: %s", room, raw)
   end
   local title, artist, album, image = self.parseMediaInfo(raw)
+  self:watchSource(selected)
   local reported = self:reportedPlaying(raw)
   self.playKnown = reported ~= nil
   if reported ~= nil then
     self.playing = reported
+  elseif on and not self.wasOn then
+    -- Nothing reports it: a room that just turned on is playing what it turned on for.
+    self.playing = true
   end
+  self.wasOn = on
   if not on then
     title, artist, album, image = "", "", "", ""
     self.playing = false
