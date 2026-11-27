@@ -9,6 +9,7 @@
 --- user-defined API action for it (see ButtonLeds:forward), so a device with no
 --- light for the button, such as a display, can show it however it likes.
 
+require("drivers-common-public.global.timer")
 local log = require("lib.logging")
 local bindings = require("lib.bindings")
 local persist = require("lib.persist")
@@ -63,6 +64,7 @@ local RGB_MODES = {
 --- @field linkTypes table<string, string> The event type of each link, by binding key.
 --- @field actionSent table<string, string> What was last sent to each link's API action this connection.
 --- @field loadNames table<string, string> The name of what each link is bound to, by binding key, once looked up.
+--- @field loadDevices table<string, integer[]> The devices behind each link's load (the load and its proxies), once looked up.
 --- @field sent table<string, string> The command last sent to each light this connection.
 --- @field selectedKey string|nil The button the Composer form is editing.
 --- @field optionKeys table<string, string> Configure Button LED option text to button key.
@@ -158,6 +160,7 @@ function ButtonLeds:new(client)
   instance.linkTypes = {}
   instance.actionSent = {}
   instance.loadNames = {}
+  instance.loadDevices = {}
   instance.sent = {}
   instance.selectedKey = nil
   instance.optionKeys = {}
@@ -268,6 +271,7 @@ function ButtonLeds:discovered(entities)
   self.sent = {}
   self.actionSent = {}
   self.loadNames = {}
+  self.loadDevices = {}
   local buttonsByDevice, lightsByDevice = {}, {}
   for _, entity in pairs(entities) do
     local deviceId = entity.device_id or 0
@@ -305,7 +309,7 @@ function ButtonLeds:discovered(entities)
     for _, link in ipairs(button.links) do
       local binding = bindings:getDynamicBinding(ESPHomeClient.EntityType.EVENT, link)
       if binding ~= nil then
-        self:requestState(binding.bindingId)
+        self:refreshState(link, binding.bindingId)
       end
       -- A connect is a fresh device session: show it what is already known.
       self:forward(link)
@@ -322,6 +326,89 @@ end
 
 --- Ask the load on a button link for its LED state and colors, as a keypad does.
 --- @param bindingId integer
+--- Words in a variable's name that say it may hold a button's on/off state.
+local STATE_VARIABLE_WORDS = { "STATE", "LED", "SELECTED" }
+
+--- A variable value as on (true), off (false) or neither (nil).
+--- @param value any
+--- @return boolean|nil
+local function onOffFrom(value)
+  local v = tostring(value or ""):lower()
+  if v == "1" or v == "true" or v == "on" or v == "yes" then
+    return true
+  elseif v == "0" or v == "false" or v == "off" or v == "no" then
+    return false
+  end
+  return nil
+end
+
+--- The on/off state of a link's load from its devices' variables, for a load that answers REQUEST_BUTTON_COLORS
+--- with its colors but not its state (Control4's custom button does). The variables are logged in full once.
+--- @param link string
+--- @return boolean|nil state
+function ButtonLeds:stateFromVariables(link)
+  self:loadName(link)
+  local found, seen = nil, {}
+  for _, device in ipairs(self.loadDevices[link] or {}) do
+    local ok, variables = pcall(C4.GetDeviceVariables, C4, device)
+    local listed = {}
+    for _, var in pairs(ok and type(variables) == "table" and variables or {}) do
+      local name = tostring(Select(var, "name") or "")
+      local value = Select(var, "value")
+      listed[name] = value
+      if found == nil then
+        local upper = name:upper()
+        for _, word in ipairs(STATE_VARIABLE_WORDS) do
+          if upper:find(word) then
+            local state = onOffFrom(value)
+            if state ~= nil then
+              found = { state = state, device = device, name = name }
+            end
+            break
+          end
+        end
+      end
+    end
+    seen[tostring(device)] = listed
+  end
+  log:info(
+    "Button link %s: its load did not report its state; %s; its devices' variables: %s",
+    link,
+    found and ("taken from device " .. found.device .. " variable " .. found.name .. ": " .. tostring(found.state))
+      or "none of them holds it",
+    seen
+  )
+  return found and found.state or nil
+end
+
+--- Ask a link's load for its state and, when it answers with colors alone, read it from its variables instead.
+--- @param link string
+--- @param bindingId integer
+function ButtonLeds:refreshState(link, bindingId)
+  self:requestState(bindingId)
+  SetTimer("ButtonLedState:" .. link, 3 * ONE_SECOND, function()
+    local feedback = self.feedback[link]
+    if bindings:getDynamicBinding(ESPHomeClient.EntityType.EVENT, link) == nil then
+      return
+    end
+    if feedback ~= nil and feedback.state ~= nil then
+      return
+    end
+    local state = self:stateFromVariables(link)
+    if state == nil then
+      return
+    end
+    feedback = feedback or {}
+    feedback.state = state
+    self.feedback[link] = feedback
+    self:forward(link)
+    local button = self.linkOwners[link]
+    if button ~= nil then
+      self:apply(button)
+    end
+  end)
+end
+
 function ButtonLeds:requestState(bindingId)
   SendToProxy(bindingId, "REQUEST_BUTTON_COLORS", {}, "COMMAND")
 end
@@ -331,7 +418,8 @@ end
 --- @param bindingId integer
 function ButtonLeds:linkBound(link, bindingId)
   self.loadNames[link] = nil
-  self:requestState(bindingId)
+  self.loadDevices[link] = nil
+  self:refreshState(link, bindingId)
   self:forward(link)
 end
 
@@ -340,6 +428,7 @@ end
 function ButtonLeds:linkUnbound(link)
   self.feedback[link] = nil
   self.loadNames[link] = nil
+  self.loadDevices[link] = nil
   self:forward(link, true)
   local button = self.linkOwners[link]
   if button ~= nil then
@@ -449,6 +538,20 @@ function ButtonLeds:loadName(link)
   if meaningful ~= "" then
     name = meaningful
   end
+  -- The load and the devices bound to its other provider bindings (its proxies, such as a custom button's UI
+  -- button), whose variables may hold its state when it does not say (see ButtonLeds:stateFromVariables).
+  local devices = { deviceId }
+  for _, record in pairs(peerRecords) do
+    if Select(record, "provider") and not tostring(Select(record, "name") or ""):lower():find("button link") then
+      for _, consumer in pairs(Select(record, "boundconsumers") or {}) do
+        local consumerId = tointeger(Select(consumer, "deviceid"))
+        if consumerId ~= nil and consumerId ~= me then
+          table.insert(devices, consumerId)
+        end
+      end
+    end
+  end
+  self.loadDevices[link] = devices
   log:info(
     "Button link %s is bound to device %s (%s), binding %s (%s): load name '%s'; its binding: %s; the device's bindings: %s",
     link,
